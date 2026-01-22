@@ -1,0 +1,104 @@
+# ============================
+# HINT-main / config.yml
+# ============================
+
+# ---- Runtime & IO ----
+PATH: /root/autodl-tmp/renlian/checkpoints   # 训练产物(权重/日志)保存目录
+RESULTS: /root/autodl-tmp/renlian/results    # 测试/可视化输出目录
+MODE: 2                 # 1: train, 2: test
+MODEL: 2                # 2: inpaint model
+MASK: 6                 # 0:none | 1:block | 2:center | 3:external | 4:half-ext-half-block | 5:mix | 6:external non-random
+SEED: 10
+GPU: [0]
+AUGMENTATION_TRAIN: 0   # 1: 使用增强；0: 不使用
+
+# ---- Data flists ----
+TRAIN_INPAINT_IMAGE_FLIST: /root/autodl-tmp/XGGGD/data/data512/train_images.flist
+TEST_INPAINT_IMAGE_FLIST:  /root/autodl-tmp/XGGGD/data/data512/test_images.flist
+TRAIN_MASK_FLIST:          /root/autodl-tmp/XGGGD/data/data512/train_masks.flist
+TEST_MASK_FLIST:           /root/autodl-tmp/XGGGD/data/data512/test_masks.flist
+STYLE_REF_FLIST:           /root/autodl-tmp/XGGGD/data/data512/style_images.flist
+
+# ---- Optim ----
+LR: 0.00005              # generator lr
+D2G_LR: 0.1              # D/G 学习率比例
+BETA1: 0.9
+BETA2: 0.999
+WD: 0
+LR_Decay: 1              # 1: 开启衰减（若代码中使用）
+
+# ---- Train schedule ----
+BATCH_SIZE: 1
+INPUT_SIZE: 256          # 0 表示使用原图尺寸
+MAX_ITERS: 300001
+
+# ---- Loss weights ----
+L1_LOSS_WEIGHT: 1.0
+STYLE_LOSS_WEIGHT: 50
+CONTENT_LOSS_WEIGHT: 0.7
+INPAINT_ADV_LOSS_WEIGHT: 0.1
+
+# ---- GAN ----
+GAN_LOSS: lsgan          # nsgan | lsgan | hinge
+GAN_POOL_SIZE: 0
+
+# ---- Logging ----
+SAVE_INTERVAL: 2000
+EVAL_INTERVAL: 0
+LOG_INTERVAL: 100
+
+# ============================
+# Style-conditioning（风格参考注入）
+# ============================
+USE_STYLE: true               # 设为 false 完全回退原 HINT
+STYLE_DIM: 64                 # TinyStyleEncoder 输出维度
+STYLE_ALPHA_INIT: 0.1         # 注入门控初值，避免训练初期过强（SharedFiLM 内部使用）
+STYLE_REF_STRATEGY: ref_flist  # same_dir | random | disabled
+CONSIST_LOSS_WEIGHT: 0.1      # 有/无风格两路一致性约束
+
+# ============================
+# LearnableMask（频率自适应门控，建议开启）
+# ============================
+LM_R_MIN: 0.10          # 保留低频半径下限(越小 → 高频占比越高)
+LM_R_MAX: 1.00          # 保留低频半径上限
+LM_GAMMA: 1.5           # 控制 (1-sim)^gamma 的曲线形状，越大越偏向低频
+
+# 注意：lm_alpha, lm_rho 为可学习参数，在 networks.py 中初始化，
+# 不需要在 config 中显式指定初值。
+
+# ============================
+# EDFFN（频域增强前馈，替换第二个 FFN）
+# ============================
+USE_EDFFN: true         # enc3/latent/dec3 中启用 EDFFN
+EDFFN_PATCH: 8          # 8/16 较稳；内部含自动 padding
+EDFFN_DROP: 0.0
+
+# ============================
+# Experiment logging 控制
+# ============================
+USE_WANDB: false
+TENSORBOARD_LOGDIR: /root/autodl-tmp/XGGGD/HINT-main/checkpoints/tb_graph
+
+# ============================
+# (可选) 导出/部署相关
+# ============================
+EXPORT_ONNX: false          # 如需导出 ONNX，建议先把 USE_EDFFN 设为 false（部分后端不支持 torch.fft）
+
+# ============================
+# Style 注入细节控制
+# ============================
+STYLE_SIM_TAU_LOW: 0.4        # 低于该相似度阈值，原来用于低频注入(现由 LearnableMask 接管，可保留作备份)
+STYLE_MIN_SIM: 0.2            # 相似度下限，避免完全关闭注入
+STYLE_GATE_SMOOTH: 3          # gate 的 avgpool 平滑核大小（奇数）
+STYLE_LOWFREQ_RATIO: 0.25     # lowpass_filter 的默认低频保留比例
+
+# Style Loss 动态权重：ω_s = STYLE_LOSS_WEIGHT * max(sim^STYLE_GAMMA, STYLE_MIN_SIM_WEIGHT)
+STYLE_GAMMA: 2.0
+STYLE_MIN_SIM_WEIGHT: 0.1
+
+# 新增 ↓↓↓
+TEXTURE_LOSS_WEIGHT: 0.5   # 纹理统计损失
+EDGE_LOSS_WEIGHT: 0.5         # （已经在代码里用 Sobel 了，这里给个整体系数）
+REFINE_BLOCK_WEIGHT: 1.0      # 纹理细化残差（一般固定 1.0）
+# ===== for reliability gating =====
+REL_LR_MULT: 5.0
