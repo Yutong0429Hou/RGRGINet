@@ -55,8 +55,6 @@ def imsave(img, path):
     im.save(path)
 
 
-
-
 class Progbar(object):
     """Displays a progress bar.
 
