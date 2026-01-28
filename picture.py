@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-csv_path = "/root/autodl-tmp/renlian/results/inpaint/reliability_stats.csv"
+csv_path = "/results/inpaint/reliability_stats.csv"
 df = pd.read_csv(csv_path)
 
 print(df.head())
@@ -21,12 +21,10 @@ def binned_mean_std(x, y, bins):
         ys.append(y[m].std())
     return np.array(xs), np.array(ym), np.array(ys)
 
-# 分箱：你现在 sim 很集中，建议用“分位数bins”
 def quantile_bins(x, qs=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)):
     x = np.asarray(x)
     b = [np.quantile(x, q) for q in qs]
     b[-1] = max(b[-1], 1.0) + 1e-3
-    # 去重
     out = [b[0]]
     for v in b[1:]:
         out.append(max(v, out[-1] + 1e-3))
