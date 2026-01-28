@@ -6,19 +6,10 @@ import numbers
 from einops import rearrange
 from .style_encoder import AlphaPredictor
 from .style_encoder import TinyStyleEncoder, SharedFiLM, LightFiLMInject
-from .edffn import EDFFN  # ✅ 使用你的 EDFFN 实现
+from .edffn import EDFFN 
 from .style_encoder import ReliabilityPredictor
 
-
-# =========================
-# Local Texture Refinement Block
-# =========================
 class TextureRefineBlock(nn.Module):
-    """
-    局部纹理细化模块：
-      - 多个 3x3 Conv + ReLU
-      - 残差连接，专门强化笔触 / 线条 / 小纹理
-    """
     def __init__(self, in_ch, num_layers=3):
         super().__init__()
         layers = []
@@ -32,9 +23,7 @@ class TextureRefineBlock(nn.Module):
     def forward(self, x):
         return x + self.body(x)
 
-# =========================
-# Base & Discriminator
-# =========================
+
 class BaseNetwork(nn.Module):
     def __init__(self):
         super(BaseNetwork, self).__init__()
@@ -113,10 +102,6 @@ class Discriminator(BaseNetwork):
 
         return outputs, [conv1, conv2, conv3, conv4, conv5]
 
-
-# =========================
-# Helpers & LayerNorm
-# =========================
 def to_3d(x):
     return rearrange(x, 'b c h w -> b (h w) c')
 
@@ -158,7 +143,6 @@ class WithBias_LayerNorm(nn.Module):
         sigma = x.var(-1, keepdim=True, unbiased=False)
         return (x - mu) / torch.sqrt(sigma + 1e-5) * self.weight + self.bias
 
-
 class LayerNorm(nn.Module):
     def __init__(self, dim, LayerNorm_type):
         super(LayerNorm, self).__init__()
@@ -171,10 +155,6 @@ class LayerNorm(nn.Module):
         h, w = x.shape[-2:]
         return to_4d(self.body(to_3d(x)), h, w)
 
-
-# =========================
-# FeedForward & Attention
-# =========================
 class FeedForward(nn.Module):
     def __init__(self, dim, ffn_expansion_factor, bias):
         super(FeedForward, self).__init__()
@@ -241,10 +221,6 @@ class Attention(nn.Module):
         out = self.project_out(out)
         return out
 
-
-# =========================
-# SandwichBlock（集成 EDFFN）
-# =========================
 class SandwichBlock(nn.Module):
     def __init__(
         self,
@@ -253,9 +229,9 @@ class SandwichBlock(nn.Module):
         ffn_expansion_factor,
         bias,
         LayerNorm_type,
-        use_edffn: bool = False,     # ✅ 是否用 EDFFN 替代第二个 FFN
-        edffn_patch: int = 8,        # ✅ EDFFN 的 patch 大小
-        edffn_drop: float = 0.0      # ✅ EDFFN 的 dropout
+        use_edffn: bool = False,   
+        edffn_patch: int = 8,       
+        edffn_drop: float = 0.0   
     ):
         super(SandwichBlock, self).__init__()
 
@@ -279,16 +255,11 @@ class SandwichBlock(nn.Module):
         x = x + self.ffn1(self.norm1_1(x))
         x = x + self.attn(self.norm1(x))
         if self.use_edffn:
-            # EDFFN 内部已带 Pre-LN + 残差，这里直接调用
             x = self.ffn2(x)
         else:
             x = x + self.ffn2(self.norm2(x))
         return x
 
-
-# =========================
-# Gated Embedding
-# =========================
 class GatedEmb(nn.Module):
     def __init__(self, in_c=3, embed_dim=48, bias=False):
         super(GatedEmb, self).__init__()
@@ -299,11 +270,6 @@ class GatedEmb(nn.Module):
         x1, x2 = x.chunk(2, dim=1)
         x = F.gelu(x1) * x2
         return x
-
-
-# =========================
-# Down / Up sample
-# =========================
 class Downsample(nn.Module):
     def __init__(self, n_feat):
         super(Downsample, self).__init__()
@@ -343,11 +309,7 @@ class Upsample(nn.Module):
 
     def forward(self, x, mask):
         return self.body(x)
-
-
-# =========================
-# 安全读取配置的工具函数
-# =========================
+        
 def _cfg_get(cfg, key, default):
     if cfg is None:
         return default
@@ -374,15 +336,7 @@ def _cfg_float(cfg, key, default=0.0):
     except Exception:
         return float(default)
 
-
-# =========================
-# 频域工具（低频掩码）
-# =========================
 def build_lowpass_mask(h, w, ratio=0.25, device='cpu', dtype=torch.float32):
-    """
-    构建中心低通掩码（圆形），ratio 为截止半径相对最小边的一半的比例。
-    ratio=0.25 表示保留半径为 0.25 * min(h,w)/2 的圆形低频。
-    """
     yy, xx = torch.meshgrid(torch.arange(h, device=device), torch.arange(w, device=device), indexing='ij')
     cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
     dist = torch.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
@@ -392,10 +346,6 @@ def build_lowpass_mask(h, w, ratio=0.25, device='cpu', dtype=torch.float32):
 
 
 def lowpass_filter(x, ratio=0.25):
-    """
-    对特征 x 做低通滤波（逐通道），仅保留低频（中心圆）。
-    x: (B,C,H,W)
-    """
     B, C, H, W = x.shape
     X = torch.fft.fft2(x, dim=(-2, -1))
     X = torch.fft.fftshift(X, dim=(-2, -1))
@@ -405,11 +355,7 @@ def lowpass_filter(x, ratio=0.25):
     x_low = torch.fft.ifft2(X, dim=(-2, -1)).real
     return x_low
 
-
-# =========================
-# HINT（集成风格注入 + EDFFN 开关 + 自适应注入）
-# =========================
-class HINT(nn.Module):
+class RGRG(nn.Module):
     def __init__(self,
                  inp_channels=4,
                  out_channels=3,
@@ -420,7 +366,7 @@ class HINT(nn.Module):
                  bias=False,
                  LayerNorm_type='WithBias',
                  config=None):
-        super(HINT, self).__init__()
+        super(RGRG, self).__init__()
 
         # ===== Style-conditioning =====
         use_style = _cfg_bool(config, "USE_STYLE", False)
@@ -428,35 +374,28 @@ class HINT(nn.Module):
             style_dim = _cfg_int(config, "STYLE_DIM", 64)
             self.style_encoder = TinyStyleEncoder(in_ch=3, dim=style_dim)
             self.shared_film = SharedFiLM(style_dim=style_dim, base_c=128)
-            # 这里假设在 decoder_level1 上注入，通道与 reduce 后一致（dim*2^1）
             self.style_inject = LightFiLMInject(base_c=128, out_ch=int(dim * 2))
         else:
             self.style_encoder = None
 
-        # 相似度与频段策略参数
-        self.sim_tau_low = _cfg_float(config, "STYLE_SIM_TAU_LOW", 0.4)      # 低于此阈值，仅低频注入
-        self.sim_min = _cfg_float(config, "STYLE_MIN_SIM", 0.2)              # 相似度最小夹逼
-        self.gate_smooth = int(_cfg_int(config, "STYLE_GATE_SMOOTH", 3))     # gate 平滑核
-        self.lowfreq_ratio = _cfg_float(config, "STYLE_LOWFREQ_RATIO", 0.25) # 低频半径比例
-        # ===== LearnableMask：相似度驱动的可学习频率门控 =====
-        # r_min, r_max 控制保留低频半径的范围
-        # ===== LearnableMask：相似度驱动的可学习频率门控 =====
+        self.sim_tau_low = _cfg_float(config, "STYLE_SIM_TAU_LOW", 0.4)    
+        self.sim_min = _cfg_float(config, "STYLE_MIN_SIM", 0.2)              
+        self.gate_smooth = int(_cfg_int(config, "STYLE_GATE_SMOOTH", 3))     
+        self.lowfreq_ratio = _cfg_float(config, "STYLE_LOWFREQ_RATIO", 0.25) 
+
         self.lm_r_min = _cfg_float(config, "LM_R_MIN", 0.1)
         self.lm_r_max = _cfg_float(config, "LM_R_MAX", 0.8)
         self.lm_gamma = _cfg_float(config, "LM_GAMMA", 1.5)
 
-        # α（斜率）和 ρ（偏移）设为可学习参数
-        self.lm_alpha = nn.Parameter(torch.tensor(5.0))   # 越大越“硬”
-        self.lm_rho   = nn.Parameter(torch.tensor(0.0))   # 频率偏移
-        self.alpha_predictor = AlphaPredictor(in_ch=int(dim * 2))  # decoder level1 的通道
+        self.lm_alpha = nn.Parameter(torch.tensor(5.0))  
+        self.lm_rho   = nn.Parameter(torch.tensor(0.0))   
+        self.alpha_predictor = AlphaPredictor(in_ch=int(dim * 2))  
         self.reliability_predictor = ReliabilityPredictor(hidden=_cfg_int(config, "REL_HID", 32))
 
-        # ===== EDFFN 开关（按阶段启用：enc3 / latent / dec3）=====
         use_edffn = _cfg_bool(config, "USE_EDFFN", False)
         edffn_patch = _cfg_int(config, "EDFFN_PATCH", 8)
         edffn_drop = _cfg_float(config, "EDFFN_DROP", 0.0)
 
-        # ----- Encoder -----
         self.patch_embed = GatedEmb(inp_channels, dim)
 
         self.encoder_level1 = nn.Sequential(*[
@@ -478,15 +417,14 @@ class HINT(nn.Module):
         self.encoder_level3 = nn.Sequential(*[
             SandwichBlock(dim=int(dim * 2 ** 2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
                           bias=bias, LayerNorm_type=LayerNorm_type,
-                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop)   # ✅ 开启 EDFFN
-            for _ in range(num_blocks[2])
+                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop)  
         ])
 
         self.down3_4 = Downsample(int(dim * 2 ** 2))
         self.latent = nn.Sequential(*[
             SandwichBlock(dim=int(dim * 2 ** 3), num_heads=heads[3], ffn_expansion_factor=ffn_expansion_factor,
                           bias=bias, LayerNorm_type=LayerNorm_type,
-                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop)   # ✅ 开启 EDFFN
+                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop)   
             for _ in range(num_blocks[3])
         ])
 
@@ -496,7 +434,7 @@ class HINT(nn.Module):
         self.decoder_level3 = nn.Sequential(*[
             SandwichBlock(dim=int(dim * 2 ** 2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
                           bias=bias, LayerNorm_type=LayerNorm_type,
-                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop)   # ✅ 开启 EDFFN
+                          use_edffn=use_edffn, edffn_patch=edffn_patch, edffn_drop=edffn_drop) 
             for _ in range(num_blocks[2])
         ])
 
@@ -522,13 +460,8 @@ class HINT(nn.Module):
             nn.Conv2d(int(dim * 2 ** 1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
         )
 
-    # ---------- 相似度：全局颜色均值的余弦相似（0..1） ----------
     @staticmethod
     def global_color_sim(img, ref):
-        """
-        img/ref: (B,3,H,W)，范围 [0,1] 或 [-1,1] 都可（内部会统一到 [0,1]）
-        返回: (B,1,1,1)
-        """
         if img.min() < 0:
             img = (img + 1.0) * 0.5
         if ref.min() < 0:
@@ -539,59 +472,42 @@ class HINT(nn.Module):
         sim = (cos + 1.0) * 0.5
         return sim.view(-1, 1, 1, 1)
 
-    # ---------- LearnableMask：根据相似度生成频率门控 ----------
     def learnable_mask(self, sim, H, W, device=None, dtype=None):
-        """
-        sim: (B,1,1,1) 全局颜色相似度 ∈ [0,1]
-        返回: (B,1,H,W) 的频率门控 M，值越大表示“保留更多低频”
-        """
+   
         device = device or sim.device
         dtype = dtype or sim.dtype
         B = sim.shape[0]
-
-        # 1) 频率坐标 ρ：以中心为 0，边缘为 1
         yy, xx = torch.meshgrid(
             torch.linspace(-1.0, 1.0, H, device=device, dtype=dtype),
             torch.linspace(-1.0, 1.0, W, device=device, dtype=dtype),
             indexing='ij'
         )
-        dist = torch.sqrt(yy ** 2 + xx ** 2)              # [0, sqrt(2)]
-        dist = dist / dist.max()                          # 归一化到 [0,1]
-        dist = dist.view(1, 1, H, W)                      # 形状方便 broadcast
-
-        # 2) r(sim)：相似度越高 → 保留的低频半径越大
+        dist = torch.sqrt(yy ** 2 + xx ** 2)              
+        dist = dist / dist.max()                         
+        dist = dist.view(1, 1, H, W)                   
         r = self.lm_r_min + (self.lm_r_max - self.lm_r_min) * (1.0 - sim) ** self.lm_gamma
-        # r: (B,1,1,1)
 
-        # 3) α 用 softplus 保证为正，ρ 为可学习偏移
-        alpha = F.softplus(self.lm_alpha)   # 标量 > 0
-        rho   = self.lm_rho                 # 标量，可正可负
+        alpha = F.softplus(self.lm_alpha)   
+        rho   = self.lm_rho                 
 
-        # 4) LearnableMask：M(ρ, sim) = σ( α ( r(sim) - ρ_freq - ρ ) )
-        #   其中 ρ_freq 就是 dist
         M = torch.sigmoid(alpha * (r - dist - rho))       # (B,1,H,W)
         return M
-    # ---------- 把 sim 递给网络中的所有 EDFFN ----------
+
     def _set_edffn_sim(self, module, sim):
-        """
-        在给定 module（可能是 nn.Sequential / SandwichBlock 树）中，
-        找到所有 EDFFN 子模块，设置它们的 current_sim 属性。
-        """
+      
         for m in module.modules():
             if isinstance(m, EDFFN):
                 m.current_sim = sim
 
     def forward(self, inp_img, mask_whole, mask_half, mask_quarter, mask_tiny, img_ref=None):
 
-        # ===== 1) 先算 sim（保留你的 heuristic 先验） =====
         sim = None
         if img_ref is not None:
             sim = self.global_color_sim(inp_img, img_ref)  # (B,1,1,1)
             sim = torch.clamp(sim, min=self.sim_min, max=1.0)
 
-        # ===== 2) 再算 learned reliability：rel =====
         rel = None
-        gate_sig = sim  # 默认退化成原行为（img_ref=None 时也是 None）
+        gate_sig = sim  
 
         if (img_ref is not None) and (sim is not None) and (self.reliability_predictor is not None):
             rel = self.reliability_predictor(inp_img, img_ref, sim)  # (B,1,1,1)
@@ -599,13 +515,11 @@ class HINT(nn.Module):
             rel_min = float(getattr(self, "rel_min", 0.0) or 0.0)
             rel = torch.clamp(rel, min=rel_min, max=1.0)
 
-            # ===== 3) 融合 gate_sig =====
             if not self.training:
-                # ✅ test：推荐 sim*rel（语义：相似度 × 可靠度）
+    
                 gate_sig = sim * rel
-                # 更激进可选：gate_sig = rel
+       
             else:
-                # ✅ train：schedule 从 sim 平滑过渡到 rel
                 it = int(getattr(self, "iteration", 0))
 
                 mix_start = float(getattr(self, "rel_mix_start", 1.0) or 1.0)
@@ -620,19 +534,13 @@ class HINT(nn.Module):
 
                 gate_sig = alpha * sim + (1.0 - alpha) * rel  # (B,1,1,1)
 
-        # ===== 3.5) clamp 保底 =====
         if gate_sig is not None:
             gate_sig = torch.clamp(gate_sig, 0.0, 1.0)
 
-        # ============================================================
-        # ✅【你要的三行】统一缓存到 generator 上（train/test 都能读到）
-        # 放这里最稳：gate_sig 已最终确定，且不依赖 style 分支是否执行
-        # ============================================================
         self.last_sim = sim.detach() if sim is not None else None
         self.last_rel = rel.detach() if rel is not None else None
         self.last_gate = gate_sig.detach() if gate_sig is not None else None
 
-        # ===== 4) 用 gate_sig 控制 EDFFN（不再用 sim） =====
         if gate_sig is not None:
             self._set_edffn_sim(self.encoder_level3, gate_sig)
             self._set_edffn_sim(self.latent, gate_sig)
@@ -666,23 +574,18 @@ class HINT(nn.Module):
         inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], dim=1)
         out_dec_level1 = self.decoder_level1(inp_dec_level1)
 
-        # ----- Style-conditioning (自适应注入) -----
         if (self.style_encoder is not None) and (img_ref is not None):
 
-            # 1) 风格编码 s
             s_vec = self.style_encoder(img_ref)  # [B, STYLE_DIM]
 
-            # 2) FiLM 参数
             gamma, beta, alpha_base = self.shared_film(s_vec)
 
-            # 3) 空间 gate
             gate = F.interpolate(mask_whole, size=out_dec_level1.shape[-2:], mode='bilinear', align_corners=False)
             k = max(1, int(self.gate_smooth))
             if k > 1:
                 pad = k // 2
                 gate = F.avg_pool2d(gate, kernel_size=k, stride=1, padding=pad)
 
-            # 4) LearnableMask：用 gate_sig
             B, C, H, W = out_dec_level1.shape
             if gate_sig is None:
                 gate_sig = torch.ones((B, 1, 1, 1), device=out_dec_level1.device, dtype=out_dec_level1.dtype)
@@ -694,17 +597,14 @@ class HINT(nn.Module):
             high = out_dec_level1 - low
             feat_for_inject = M * low + (1.0 - M) * high
 
-            # 5) AlphaPredictor：也用 gate_sig
             alpha_dynamic = self.alpha_predictor(out_dec_level1, gate_sig)  # (B,1,1,1)
 
-            # 6) 风格注入：scale 用 gate_sig
             out_dec_level1 = self.style_inject(
                 feat_for_inject, gamma, beta, alpha_dynamic,
                 gate=gate,
                 scale=gate_sig
             )
 
-        # ===== 纹理细化残差块 =====
         feat = self.texture_refine(out_dec_level1)
         out = self.output(feat)
         out = (torch.tanh(out) + 1) / 2
