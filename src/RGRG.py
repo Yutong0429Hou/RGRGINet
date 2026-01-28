@@ -1,4 +1,4 @@
-print(">>>> LOADED HINT:", __file__)
+print(">>>> LOADED RGRG:", __file__)
 
 import os
 import numpy as np
@@ -15,7 +15,6 @@ from PIL import Image
 from skimage.metrics import structural_similarity as compare_ssim
 from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 
-# ===== wandb 可选导入 =====
 try:
     import wandb
     _WANDB_AVAILABLE = True
@@ -28,13 +27,7 @@ import torchvision
 import time
 
 
-"""
-This repo is modified basing on Edge-Connect
-https://github.com/knazeri/edge-connect
-"""
-
-
-class HINT():
+class RGRG():
     def __init__(self, config):
         self.config = config
 
@@ -90,7 +83,7 @@ class HINT():
             self.debug = True
 
         self.log_file = os.path.join(config.PATH, 'log_' + model_name + '.dat')
-        # 👉 新增：可视化保存计数器
+
         self.vis_idx = 0
     def load(self):
         if self.config.MODEL == 2:
@@ -102,7 +95,7 @@ class HINT():
 
 
     def train(self):
-        # ---- wandb 守护式 watch ----
+
         if self.use_wandb:
             try:
                 has_run = hasattr(wandb, "run") and (wandb.run is not None)
@@ -111,7 +104,7 @@ class HINT():
             if has_run:
                 wandb.watch(self.inpaint_model, log='all', log_freq=10)
 
-        # ---- DataLoader 构建 ----
+
         print(">>> len(train_dataset):", len(self.train_dataset))
         bs = min(self.config.BATCH_SIZE, max(1, len(self.train_dataset)))
         train_loader = DataLoader(
@@ -141,7 +134,7 @@ class HINT():
         max_iteration = int(float(self.config.MAX_ITERS))
         total = len(self.train_dataset)
 
-        # ---------------------- 训练循环 ----------------------
+
         while keep_training:
             epoch += 1
             print("\n\nTraining epoch:", epoch)
@@ -157,7 +150,7 @@ class HINT():
             for bidx, items in enumerate(train_loader):
                 self.inpaint_model.train()
 
-                # ===== 数据解包 =====
+    
                 if model_flag == 2:
                     if len(items) == 3:
                         images, masks, image_ref = self.cuda(*items)
@@ -181,20 +174,19 @@ class HINT():
                     logs.append(("psnr", psnr_value))
                     logs.append(("mae", mae_value))
 
-                    # 反向传播（内部自增 iteration）
+       
                     self.inpaint_model.backward(gen_loss, dis_loss)
                     iteration = self.inpaint_model.iteration
 
-                    # ✅ 到达保存间隔就存一次模型
                     if iteration % self.config.SAVE_INTERVAL == 0:
                         print(f"[Checkpoint] saving at iter {iteration} ...")
                         self.save()
-                    # ---- 关键打印 ----
+         
                     if bidx == 0 or iteration % 50 == 0:
                         print(f"  iter={iteration} | gLoss={float(gen_loss.detach().cpu()):.4f} "
                               f"dLoss={float(dis_loss.detach().cpu()):.4f}")
 
-                    # ---- 首个 batch 的 debug 保存 ----
+     
                     if epoch == 1 and bidx == 0:
                         inputs = (images * (1 - masks))
                         images_joint = stitch_images(
@@ -216,18 +208,17 @@ class HINT():
 
                         print("  [DEBUG SAVE OK]:", os.path.join(path_joint_dbg, dbg_name))
 
-                    # ---- 中止条件 ----
                     if iteration >= max_iteration:
                         keep_training = False
                         break
 
-                    # ---- 日志 ----
+              
                     logs = [("epoch", epoch), ("iter", iteration)] + logs
                     progbar.add(len(images),
                                 values=logs if self.config.VERBOSE else
                                 [x for x in logs if not x[0].startswith('l_')])
 
-                    # wandb 记录
+            
                     if iteration % 10 == 0 and self.use_wandb:
                         try:
                             wandb.log({
@@ -241,16 +232,16 @@ class HINT():
                         except:
                             pass
 
-                    # ======= 保存最后一批样本用于 epoch 保存 ========
+         
                     last_images = images
                     last_outputs_img = outputs_img
                     last_outputs_merged = outputs_merged
                     last_masks = masks
 
-            # ----------------- ← epoch 结束，保存一次 -----------------
+
 
             print(f"\n[Epoch {epoch}] Saving sample preview...")
-            self.save()  # ← 加在这里
+            self.save()  
             path_masked = os.path.join(self.results_path, self.model_name, "masked_epoch")
             path_result = os.path.join(self.results_path, self.model_name, "result_epoch")
             path_joint = os.path.join(self.results_path, self.model_name, "joint_epoch")
@@ -299,12 +290,11 @@ class HINT():
             batch_size=1,
         )
 
-        # --------- matched 指标 ---------
         psnr_list, ssim_list, l1_list, lpips_list = [], [], [], []
-        # --------- mismatched 指标 ---------
+
         psnr_mis_list, ssim_mis_list, l1_mis_list, lpips_mis_list = [], [], [], []
 
-        # --------- reliability 统计（实验B）---------
+
         stats_rows = []
         sim_vals, rel_vals, gate_vals = [], [], []
         sim_mis_vals, rel_mis_vals, gate_mis_vals = [], [], []
@@ -320,7 +310,6 @@ class HINT():
             except Exception:
                 return None
 
-        # 从 dataset 抽一个“错配 reference”
         def _sample_mismatch_ref(cur_index: int):
             if len(self.test_dataset) <= 1:
                 return None
@@ -334,34 +323,30 @@ class HINT():
                     return ref
             return None
 
-        # ✅ 强错配：尽量把 global_color_sim 拉低
+
         def _strong_mismatch_transform(ref_bchw):
             """
             ref_bchw: (B,3,H,W), expected in [0,1]
             """
             x = ref_bchw.clone()
 
-            # 1) 颜色反相
             x = 1.0 - x
 
-            # 2) 通道打乱
+
             x = x[:, [2, 0, 1], :, :]
 
-            # 3) 加噪声
             x = x + 0.15 * torch.randn_like(x)
 
-            # 4) 全局颜色偏移（进一步破坏均值相似度）
             shift = (torch.rand(x.size(0), 3, 1, 1, device=x.device, dtype=x.dtype) - 0.5) * 0.6
             x = x + shift
 
             return torch.clamp(x, 0.0, 1.0)
 
-        # 用于相关性统计：drop vs gate
-        psnr_drop_list, ssim_drop_list, l1_drop_list, lpips_drop_list = [], [], [], []
-        gate_for_drop = []  # mismatch 的 gate（与 drop 对齐）
 
+        psnr_drop_list, ssim_drop_list, l1_drop_list, lpips_drop_list = [], [], [], []
+        gate_for_drop = []  
         for cur_idx, items in enumerate(test_loader):
-            # dataset.py 默认返回 (img, mask, ref)
+
             if isinstance(items, (list, tuple)) and len(items) == 3:
                 images, masks, image_ref = self.cuda(*items)
             else:
@@ -387,7 +372,7 @@ class HINT():
                 outputs_img = self.inpaint_model(images, masks, image_ref=image_ref)
                 outputs_merged = (outputs_img * masks) + (images * (1 - masks))
 
-                # 读 matched 的 sim/rel/gate（来自 generator 缓存）
+
                 g = self.inpaint_model.generator
                 sim_mean = _mean_or_none(getattr(g, "last_sim", None))
                 rel_mean = _mean_or_none(getattr(g, "last_rel", None))
@@ -404,13 +389,11 @@ class HINT():
                         if ref_mis.dim() == 3:
                             ref_mis = ref_mis.unsqueeze(0)  # (1,3,H,W)
 
-                        # ✅ device 对齐
                         ref_mis = ref_mis.to(images.device)
 
-                        # ✅ 保底 clamp（防止 ref 不是 [0,1]）
+                        
                         ref_mis = torch.clamp(ref_mis, 0.0, 1.0)
 
-                        # ✅ 强错配扰动：保证 mismatch 真的是 mismatch
                         ref_mis = _strong_mismatch_transform(ref_mis)
 
                         outputs_img_mis = self.inpaint_model(images, masks, image_ref=ref_mis)
@@ -440,7 +423,7 @@ class HINT():
             l1_loss = torch.nn.functional.l1_loss(outputs_merged, images, reduction='mean').item()
             l1_list.append(l1_loss)
 
-            # =============== metrics: mismatched（若存在） ===============
+
             psnr_mis = ssim_mis = pl_mis = l1_mis = None
             if outputs_merged_mis is not None:
                 psnr_mis, ssim_mis = self.metric(images, outputs_merged_mis)
@@ -464,11 +447,9 @@ class HINT():
                 l1_drop_list.append(float(l1_mis - l1_loss))
                 lpips_drop_list.append(float(pl_mis - pl))
 
-                # mismatch gate 用于解释 drop
                 if gate_mis_mean is not None:
                     gate_for_drop.append(float(gate_mis_mean))
 
-            # =============== print: matched / mismatch + gate ===============
             msg = (
                 f"[Matched] psnr:{psnr:.3f}/{np.average(psnr_list):.3f}  "
                 f"ssim:{ssim:.4f}/{np.average(ssim_list):.4f}  "
@@ -533,7 +514,7 @@ class HINT():
 
             print(name + ' complete!')
 
-        # =============== 保存 CSV（实验B输出） ===============
+
         csv_path = os.path.join(self.results_path, self.model_name, "reliability_stats.csv")
         try:
             create_dir(os.path.join(self.results_path, self.model_name))
@@ -547,7 +528,7 @@ class HINT():
         except Exception as e:
             print("[WARN] save csv failed:", e)
 
-        # =============== sim 分桶统计 gate（实验B曲线数据） ===============
+
         def _bucket_mean(sim_list, gate_list, bins):
             out = []
             if len(sim_list) == 0 or len(gate_list) == 0:
@@ -593,7 +574,6 @@ class HINT():
             for l, r, mg, cnt in bucket_mismatch:
                 print(f"  sim in [{l:.4f},{r:.4f}): gate_mean={mg} (n={cnt})")
 
-        # =============== 额外：相关性/校准（实验B加分项） ===============
         def _pearson(x, y):
             x = np.array(x, dtype=np.float32)
             y = np.array(y, dtype=np.float32)
@@ -614,7 +594,6 @@ class HINT():
             print("[Correlation] pearson(gate_mis, drop_psnr):", corr_gate_drop_psnr)
             print("[Correlation] pearson(gate_mis, drop_lpips):", corr_gate_drop_lpips)
 
-        # =============== 汇总输出：matched/mismatch/drop ===============
         print('\nEnd Testing')
 
         def _avg(x):
