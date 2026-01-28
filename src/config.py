@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
     'EDFFN_DROP': 0.0,
 
     # ---- Logging / export ----
-    'USE_WANDB': False,  # 关闭 wandb 交互
+    'USE_WANDB': False,  
     'EXPORT_ONNX': False,
 
 
