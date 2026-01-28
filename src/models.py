@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-from .networks import HINT, Discriminator
+from .networks import RGRG, Discriminator
 from .loss import AdversarialLoss, PerceptualLoss, StyleLoss, TextureLoss
 
 
@@ -17,7 +17,6 @@ class BaseModel(nn.Module):
 
         self.gen_weights_path = os.path.join(config.PATH, name + '_gen.pth')
         self.dis_weights_path = os.path.join(config.PATH, name + '_dis.pth')
-        # ✅ 确保 checkpoints 目录存在
         os.makedirs(self.config.PATH, exist_ok=True)
 
     def load(self):
@@ -35,7 +34,6 @@ class BaseModel(nn.Module):
     def save(self):
         print(f'\nSaving {self.name} at iter {self.iteration}...\n')
 
-        # 1) 保存 snapshot
         gen_ckpt = os.path.join(
             self.config.PATH,
             f"{self.name}_gen_{self.iteration:08d}.pth"
@@ -54,7 +52,6 @@ class BaseModel(nn.Module):
             'discriminator': self.discriminator.state_dict()
         }, dis_ckpt)
 
-        # 2) 同时更新 latest（可选）
         torch.save({
             'iteration': self.iteration,
             'generator': self.generator.state_dict()
@@ -69,33 +66,28 @@ class InpaintingModel(BaseModel):
     def __init__(self, config):
         super(InpaintingModel, self).__init__('InpaintingModel', config)
 
-        # ====== 主体网络 ======
-        generator = HINT(config=config)
+        generator = RGRG(config=config)
         discriminator = Discriminator(in_channels=3, use_sigmoid=config.GAN_LOSS != 'hinge')
 
         if len(config.GPU) > 1:
             generator = nn.DataParallel(generator, config.GPU)
             discriminator = nn.DataParallel(discriminator, config.GPU)
 
-        # ====== Loss 模块 ======
         self.add_module('generator', generator)
         self.add_module('discriminator', discriminator)
         self.add_module('l1_loss', nn.L1Loss())
         self.add_module('perceptual_loss', PerceptualLoss())
         self.add_module('style_loss', StyleLoss())
         self.add_module('adversarial_loss', AdversarialLoss(type=config.GAN_LOSS))
-        # ✅ 纹理损失
         self.add_module('texture_loss', TextureLoss())
 
-        # ===== 自适应 Loss 平衡（EMA 跟踪各项 loss 大小） =====
         self.ema_l1 = 0.0
         self.ema_style = 0.0
         self.ema_tex = 0.0
         self.ema_perc = 0.0
         self.ema_gan = 0.0
-        self.ema_momentum = 0.01  # 可适当调大(0.02)会更快跟上，调小更平滑
+        self.ema_momentum = 0.01  
 
-        # ===== Sobel 边缘检测（结构一致性用） =====
         sobel_x = torch.tensor([[1, 0, -1],
                                 [2, 0, -2],
                                 [1, 0, -1]], dtype=torch.float32)
@@ -106,18 +98,11 @@ class InpaintingModel(BaseModel):
         self.sobel_x = sobel_x.view(1, 1, 3, 3).to(config.DEVICE)
         self.sobel_y = sobel_y.view(1, 1, 3, 3).to(config.DEVICE)
 
-        # self.gen_optimizer = optim.Adam(
-        #     params=generator.parameters(),
-        #     lr=float(config.LR),
-        #     betas=(config.BETA1, config.BETA2)
-        # )
-        # ===== Generator Optimizer（reliability head 用更大学习率）=====
         rel_lr_mult = getattr(config, "REL_LR_MULT", 5.0)
         if rel_lr_mult is None:
             rel_lr_mult = 5.0
         rel_lr_mult = float(rel_lr_mult)
 
-        # 兼容 DataParallel
         gen_mod = generator.module if isinstance(generator, nn.DataParallel) else generator
 
         rel_params = []
@@ -129,8 +114,6 @@ class InpaintingModel(BaseModel):
                 rel_params.append(p)
             else:
                 base_params.append(p)
-
-        # 👇👇👇 就在这里加这行 debug 👇👇👇
         print("rel params:", len(rel_params), "base params:", len(base_params))
 
         self.gen_optimizer = optim.Adam(
@@ -147,25 +130,14 @@ class InpaintingModel(BaseModel):
             betas=(config.BETA1, config.BETA2)
         )
 
-    # =========================
-    # forward + process
-    # =========================
     def process(self, images, masks, image_ref=None):
-        """
-        images: 原图
-        masks: 缺损掩码
-        image_ref: 风格参考图（可选）
-        """
         self.iteration += 1
         self.gen_optimizer.zero_grad()
         self.dis_optimizer.zero_grad()
 
-        # ========== 1️⃣ 前向 ==========
         outputs_img = self(images, masks, image_ref=image_ref)
 
-        # --------------------------------
-        # 2️⃣ 判别器 Loss（不做自适应）
-        # --------------------------------
+
         dis_real, _ = self.discriminator(images)
         dis_fake, _ = self.discriminator(outputs_img.detach())
 
@@ -173,55 +145,28 @@ class InpaintingModel(BaseModel):
         dis_fake_loss = self.adversarial_loss(dis_fake, False, True)
         dis_loss = (dis_real_loss + dis_fake_loss) / 2
 
-        # --------------------------------
-        # 3️⃣ 生成器各项 Loss（先单独算，再做自适应加权）
-        # --------------------------------
-        # 3.1 GAN loss
         gen_fake, _ = self.discriminator(outputs_img)
         adv_raw = self.adversarial_loss(gen_fake, True, False)
         gen_gan_loss = adv_raw * self.config.INPAINT_ADV_LOSS_WEIGHT
 
-        # 3.2 L1 重建（只在 mask 区域）
         eps = 1e-6
-        diff = torch.abs(outputs_img - images) * masks  # 只看被遮挡的区域
-        num = torch.sum(masks) + eps                    # mask 内像素数量
+        diff = torch.abs(outputs_img - images) * masks  
+        num = torch.sum(masks) + eps                   
         l1_raw = diff.sum() / num
         gen_l1_loss = l1_raw * self.config.L1_LOSS_WEIGHT
 
-        # 3.3 感知损失
+
         perc_raw = self.perceptual_loss(outputs_img, images)
         gen_content_loss = perc_raw * self.config.CONTENT_LOSS_WEIGHT
 
-        # # 3.4 风格损失（带颜色相似度门控）
-        # if image_ref is not None and hasattr(self.generator, 'global_color_sim'):
-        #     sim = self.generator.global_color_sim(images, image_ref)  # (B,1,1,1)
-        #
-        #     gamma = getattr(self.config, "STYLE_GAMMA", 2.0)
-        #     s_min = getattr(self.config, "STYLE_MIN_SIM_WEIGHT", 0.1)
-        #
-        #     sim_nl = torch.clamp(sim ** gamma, min=s_min)
-        #     # STYLE_LOSS_WEIGHT * 非线性相似度
-        #     style_weight = self.config.STYLE_LOSS_WEIGHT * sim_nl.mean()
-        # else:
-        #     sim = None
-        #     style_weight = self.config.STYLE_LOSS_WEIGHT
-        #
-        # style_raw = self.style_loss(outputs_img * masks, images * masks)
-        # gen_style_loss = style_raw * style_weight
-        # --------------------------------
-        # 3.4 风格损失（使用 forward 中同一个 gating 信号，确保 gen_style_loss 一定定义）
-        # --------------------------------
-        # 先给默认值，避免任何分支漏赋值导致 NameError
         sim = None
         style_weight = float(self.config.STYLE_LOSS_WEIGHT)
 
-        # 1) 优先使用 generator.forward() 里缓存的 gate（rel 或 s_tilde）
         gate_sig = None
         if image_ref is not None:
             gate_sig = getattr(self.generator, "last_gate", None)
 
         if (image_ref is not None) and (gate_sig is not None):
-            # 使用 gate 做非线性门控
             gamma = float(getattr(self.config, "STYLE_GAMMA", 2.0))
             s_min = float(getattr(self.config, "STYLE_MIN_SIM_WEIGHT", 0.1))
 
@@ -229,7 +174,6 @@ class InpaintingModel(BaseModel):
             style_weight = float(self.config.STYLE_LOSS_WEIGHT) * gate_nl.mean()
 
         else:
-            # 2) 回退：使用旧的 sim 门控（兼容 last_gate 还没缓存/没有 reference 的情况）
             if (image_ref is not None) and hasattr(self.generator, "global_color_sim"):
                 sim = self.generator.global_color_sim(images, image_ref)  # (B,1,1,1)
                 sim = torch.clamp(sim, min=0.0, max=1.0)
@@ -240,15 +184,12 @@ class InpaintingModel(BaseModel):
                 sim_nl = torch.clamp(sim ** gamma, min=s_min)
                 style_weight = float(self.config.STYLE_LOSS_WEIGHT) * sim_nl.mean()
             else:
-                # 没有 reference 或没有 sim 函数，就用常数权重
                 sim = None
                 style_weight = float(self.config.STYLE_LOSS_WEIGHT)
 
-        # ✅ 无论走哪个分支，这两行都必须执行，保证 gen_style_loss 一定存在
         style_raw = self.style_loss(outputs_img * masks, images * masks)
         gen_style_loss = style_raw * style_weight
 
-        # 3.5 纹理统计损失（Texture-KL Loss）
         tex_w_cfg = float(getattr(self.config, "TEXTURE_LOSS_WEIGHT", 0.0) or 0.0)
         if tex_w_cfg > 0 and image_ref is not None:
             tex_raw = self.texture_loss(outputs_img * masks, image_ref * masks)
@@ -256,12 +197,10 @@ class InpaintingModel(BaseModel):
         else:
             tex_raw = torch.tensor(0.0, device=images.device)
             gen_texture_loss = torch.tensor(0.0, device=images.device)
-
-        # 3.6 Dual Path Consistency v2（这块不做自适应，单独一个项）
         w_cons = float(getattr(self.config, "CONSIST_LOSS_WEIGHT", 0.0))
         if w_cons > 0 and image_ref is not None:
             with torch.no_grad():
-                base_out = self.forward(images, masks, image_ref=None)  # 无风格输出
+                base_out = self.forward(images, masks, image_ref=None)  
 
             def sobel_edges(x):
                 gray = x.mean(dim=1, keepdim=True)
@@ -285,11 +224,6 @@ class InpaintingModel(BaseModel):
         else:
             cons_loss = torch.tensor(0.0, device=images.device)
 
-        # --------------------------------
-        # 4️⃣ 自适应 Loss Balancing（关键）
-        #    思路：跟踪各项 loss 的长时均值 ema_*
-        #         用 avg / ema_i 作为 scale，控制大家量级接近
-        # --------------------------------
         with torch.no_grad():
             cur_l1 = float(gen_l1_loss.detach().item())
             cur_style = float(gen_style_loss.detach().item())
@@ -298,7 +232,6 @@ class InpaintingModel(BaseModel):
             cur_gan = float(gen_gan_loss.detach().item())
 
             m = self.ema_momentum
-            # 初始化：第一次就直接等于当前值
             if self.ema_l1 == 0.0:
                 self.ema_l1 = cur_l1
                 self.ema_style = cur_style
@@ -312,7 +245,6 @@ class InpaintingModel(BaseModel):
                 self.ema_perc = (1 - m) * self.ema_perc + m * cur_perc
                 self.ema_gan = (1 - m) * self.ema_gan + m * cur_gan
 
-            # 只对 >0 的项做平均，避免全 0 出问题
             ema_list = [v for v in [self.ema_l1, self.ema_style,
                                     self.ema_tex, self.ema_perc,
                                     self.ema_gan] if v > 0]
@@ -327,7 +259,7 @@ class InpaintingModel(BaseModel):
                 if ema_val <= 0:
                     return 1.0
                 s = avg_mag / (ema_val + eps_ema)
-                # 防止权重抖动太大，夹在 [0.5, 2.0] 之间
+    
                 s = max(0.5, min(2.0, s))
                 return s
 
@@ -337,7 +269,7 @@ class InpaintingModel(BaseModel):
             scale_perc = make_scale(self.ema_perc)
             scale_gan = make_scale(self.ema_gan)
 
-        # 最终自适应后的总生成器 loss
+    
         gen_loss = (
             gen_gan_loss * scale_gan +
             gen_l1_loss * scale_l1 +
@@ -347,10 +279,6 @@ class InpaintingModel(BaseModel):
             cons_loss
         )
 
-        # --------------------------------
-        # 5️⃣ 日志
-        #    这里日志还是记录「原始加权」的 loss，方便画图对比
-        # --------------------------------
         logs = [
             ("gen_total", float(gen_loss.item())),
             ("dis_total", float(dis_loss.item())),
@@ -361,7 +289,6 @@ class InpaintingModel(BaseModel):
             ("texture_loss", float(gen_texture_loss.item())),
         ]
 
-        # 额外记录一下自适应 scale，方便你 debug/画图
         logs += [
             ("scale_gan", float(scale_gan)),
             ("scale_l1", float(scale_l1)),
@@ -386,15 +313,8 @@ class InpaintingModel(BaseModel):
 
         return outputs_img, gen_loss, dis_loss, logs, gen_gan_loss, gen_l1_loss, gen_content_loss, gen_style_loss
 
-    # =========================
-    # 前向传播（统一接口）
-    # =========================
     def forward(self, images, masks, image_ref=None):
-        """
-        images: 原图
-        masks: 缺损掩码
-        image_ref: 参考图（None 表示回退为无风格版）
-        """
+
         images_masked = (images * (1 - masks).float()) + masks
         inputs = images_masked
 
@@ -408,11 +328,7 @@ class InpaintingModel(BaseModel):
         )
         return outputs_img
 
-    # =========================
-    # 优化器更新
-    # =========================
     def backward(self, gen_loss=None, dis_loss=None):
-        # 加梯度裁剪防止梯度爆炸
         torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 5.0)
         torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 5.0)
 
@@ -428,10 +344,6 @@ class InpaintingModel(BaseModel):
         gen_loss.backward()
         self.gen_optimizer.step()
 
-
-# =========================
-# Smooth L1 Helper
-# =========================
 def abs_smooth(x):
     absx = torch.abs(x)
     minx = torch.min(absx, other=torch.ones_like(absx))
